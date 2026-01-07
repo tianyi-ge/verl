@@ -909,7 +909,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                 checkpoint_config=checkpoint_contents,
             )
 
-    @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"))
+    @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"), tensor_transport="nixl")
     @DistProfiler.annotate(color="red", role="actor_update")
     def update_actor(self, data: DataProto):
         assert self._is_actor
@@ -941,8 +941,6 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             # TODO: here, we should return all metrics
             output = DataProto(meta_info={"metrics": metrics})
 
-            output = output.to("cpu")
-
         if self._is_offload_param:
             offload_fsdp_model_to_cpu(self.actor_module_fsdp)
             log_gpu_memory_usage("After offload actor model during update_actor", logger=logger)
@@ -952,7 +950,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
         return output
 
-    @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="rollout"))
+    @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="rollout"), tensor_transport="nixl")
     @DistProfiler.annotate(color="red", role="rollout_generate")
     def generate_sequences(self, prompts: DataProto):
         # Support all hardwares
@@ -996,7 +994,6 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             }
         )
         output.meta_info["timing"] = timing_generate
-        output = output.to("cpu")
 
         # clear kv cache
         get_torch_device().empty_cache()

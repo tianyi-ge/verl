@@ -420,7 +420,13 @@ def _materialize_futures(*args, **kwargs):
     return new_args, kwargs
 
 
-def register(dispatch_mode=Dispatch.ALL_TO_ALL, execute_mode=Execute.ALL, blocking=True, materialize_futures=True):
+def register(
+    dispatch_mode=Dispatch.ALL_TO_ALL,
+    execute_mode=Execute.ALL,
+    blocking=True,
+    materialize_futures=True,
+    tensor_transport=None,
+):
     """Register a function with distributed execution configuration.
 
     This decorator registers a function with specific dispatch and execution modes
@@ -436,6 +442,11 @@ def register(dispatch_mode=Dispatch.ALL_TO_ALL, execute_mode=Execute.ALL, blocki
             Whether the execution should be blocking. Defaults to True.
         materialize_futures:
             Whether to materialize the data before dispatching. Defaults to True.
+        tensor_transport:
+            The tensor transport backend to use for GPU-to-GPU data transfer.
+            Options: None (default, uses Ray object store via CPU), "nixl" (uses NIXL
+            for direct GPU-to-GPU transfer). When set to "nixl", tensors stay on GPU
+            and are transferred directly between workers without going through CPU.
 
     Returns:
         A decorator that wraps the original function with distributed execution
@@ -462,7 +473,12 @@ def register(dispatch_mode=Dispatch.ALL_TO_ALL, execute_mode=Execute.ALL, blocki
             return await func(*args, **kwargs)
 
         wrapper = async_inner if inspect.iscoroutinefunction(func) else inner
-        attrs = {"dispatch_mode": dispatch_mode, "execute_mode": execute_mode, "blocking": blocking}
+        attrs = {
+            "dispatch_mode": dispatch_mode,
+            "execute_mode": execute_mode,
+            "blocking": blocking,
+            "tensor_transport": tensor_transport,
+        }
         setattr(wrapper, MAGIC_ATTR, attrs)
         return wrapper
 

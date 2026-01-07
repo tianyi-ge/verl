@@ -210,6 +210,7 @@ class WorkerGroup:
                 dispatch_mode = attribute["dispatch_mode"]
                 execute_mode = attribute["execute_mode"]
                 blocking = attribute["blocking"]
+                tensor_transport = attribute.get("tensor_transport", None)
 
                 # get dispatch fn
                 if isinstance(dispatch_mode, Dispatch):
@@ -244,6 +245,7 @@ class WorkerGroup:
                     collect_fn=collect_fn,
                     execute_fn=execute_fn,
                     blocking=blocking,
+                    tensor_transport=tensor_transport,
                 )
 
                 try:

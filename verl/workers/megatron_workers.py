@@ -532,7 +532,7 @@ class ActorRolloutRefWorker(MegatronWorker, DistProfilerExtension):
         log_gpu_memory_usage(f"After building {self.config.rollout.name} rollout", logger=logger)
 
         # 5. switch to trainer mode
-        # NOTE: It's critical that hybrid engine in trainer mode initially to load checkpoint.
+        # NOTE: It's critical that hybridengine in trainer mode initially to load checkpoint.
         # For async mode, we can't call run_until_complete here, so we will switch to trainer mode in AgentLoopManager.
         # Note: sync mode is deprecated and rejected in RolloutConfig.__post_init__
 
@@ -719,7 +719,7 @@ class ActorRolloutRefWorker(MegatronWorker, DistProfilerExtension):
         self.gen_random_states = get_torch_device().get_rng_state()
         get_torch_device().set_rng_state(self.torch_random_states)
 
-    @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"))
+    @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"), tensor_transport="nixl")
     @GPUMemoryLogger(role="update_actor", logger=logger)
     @DistProfiler.annotate(color="red", role="actor_update")
     def update_actor(self, data: DataProto):
@@ -750,7 +750,6 @@ class ActorRolloutRefWorker(MegatronWorker, DistProfilerExtension):
 
         # TODO: here, we should return all metrics
         output = DataProto(meta_info={"metrics": metrics})
-        output = output.to("cpu")
 
         if self._is_offload_param:
             offload_megatron_model_to_cpu(self.actor_module)
@@ -762,12 +761,11 @@ class ActorRolloutRefWorker(MegatronWorker, DistProfilerExtension):
         aggressive_empty_cache(force_sync=True)
         return output
 
-    @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="rollout"))
+    @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="rollout"), tensor_transport="nixl")
     @GPUMemoryLogger(role="generate_sequences", logger=logger)
     @DistProfiler.annotate(color="red", role="rollout_generate")
     def generate_sequences(self, prompts: DataProto):
         assert self._is_rollout
-        prompts = prompts.to(get_device_name())
         meta_info = {
             "eos_token_id": self.generation_config.eos_token_id
             if self.generation_config is not None
@@ -807,12 +805,11 @@ class ActorRolloutRefWorker(MegatronWorker, DistProfilerExtension):
             }
         )
         output.meta_info["timing"] = timing_generate
-        output = output.to("cpu")
         # clear kv cache
         aggressive_empty_cache(force_sync=True)
         return output
 
-    @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"))
+    @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"), tensor_transport="nixl")
     @GPUMemoryLogger(role="compute_ref_log_prob", logger=logger)
     @DistProfiler.annotate(color="olive", role="ref_compute_log_prob")
     def compute_ref_log_prob(self, data: DataProto):
@@ -827,14 +824,13 @@ class ActorRolloutRefWorker(MegatronWorker, DistProfilerExtension):
         data.meta_info["temperature"] = self.config.rollout.temperature
         output, _, _ = self.ref_policy.compute_log_prob(data=data, calculate_entropy=False)
         output = DataProto.from_dict(tensors={"ref_log_prob": output})
-        output = output.to("cpu")
         if self._ref_is_offload_param:
             offload_megatron_model_to_cpu(self.ref_module)
             log_gpu_memory_usage("After offload ref params and grad during compute_ref_log_prob", logger=logger)
         aggressive_empty_cache(force_sync=True)
         return output
 
-    @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"))
+    @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"), tensor_transport="nixl")
     @GPUMemoryLogger(role="compute_log_prob", logger=logger)
     @DistProfiler.annotate(color="blue", role="actor_compute_log_prob")
     def compute_log_prob(self, data: DataProto):
@@ -866,7 +862,6 @@ class ActorRolloutRefWorker(MegatronWorker, DistProfilerExtension):
             RouterReplay.clear_global_indices()
             RouterReplay.clear_global_router_replay_action()
 
-        output = output.to("cpu")
         # clear kv cache
         if self._is_offload_param:
             offload_megatron_model_to_cpu(self.actor_module)
@@ -1207,28 +1202,24 @@ class CriticWorker(MegatronWorker, DistProfilerExtension):
             peft_cls=self.peft_cls,
         )
 
-    @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="critic"))
+    @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="critic"), tensor_transport="nixl")
     @DistProfiler.annotate(color="cyan", role="compute_values")
     def compute_values(self, data: DataProto):
         micro_batch_size = self.config.ppo_micro_batch_size_per_gpu
         data.meta_info["micro_batch_size"] = micro_batch_size
         data.meta_info["max_token_len"] = self.config.forward_max_token_len_per_gpu
         data.meta_info["use_dynamic_bsz"] = self.config.use_dynamic_bsz
-        data = data.to(get_device_id())
         if self._is_offload_param:
             load_megatron_model_to_gpu(self.critic_module)
         values = self.critic.compute_values(data=data)
         output = DataProto.from_dict(tensors={"values": values})
-        output = output.to("cpu")
         if self._is_offload_param:
             offload_megatron_model_to_cpu(self.critic_module)
         return output
 
-    @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="critic"))
+    @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="critic"), tensor_transport="nixl")
     @DistProfiler.annotate(color="pink", role="critic_update")
     def update_critic(self, data: DataProto):
-        data = data.to(get_device_id())
-
         if self._is_offload_param:
             load_megatron_model_to_gpu(self.critic_module)
         if self._is_offload_optimizer:
@@ -1252,7 +1243,6 @@ class CriticWorker(MegatronWorker, DistProfilerExtension):
             offload_megatron_model_to_cpu(self.critic_module)
         if self._is_offload_optimizer:
             offload_megatron_optimizer(self.critic_optimizer)
-        output = output.to("cpu")
         return output
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
@@ -1448,13 +1438,11 @@ class RewardModelWorker(MegatronWorker, DistProfilerExtension):
 
     # TODO: reward model use itself tokenizer instead of sft tokenizer
     # the input_ids, responses, attention_mask and position_ids may be different!
-    @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="reward"))
+    @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="reward"), tensor_transport="nixl")
     @DistProfiler.annotate(color="brown", role="compute_rm_score")
     def compute_rm_score(self, data: DataProto):
         data.meta_info["micro_batch_size"] = self.config.micro_batch_size_per_gpu
         data.meta_info["max_token_len"] = self.config.forward_max_token_len_per_gpu
         data.meta_info["use_dynamic_bsz"] = self.config.use_dynamic_bsz
-        data = data.to(get_device_id())
         output = self.rm.compute_reward(data)
-        output = output.to("cpu")
         return output

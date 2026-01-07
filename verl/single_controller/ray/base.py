@@ -44,12 +44,12 @@ def get_random_string(length: int) -> str:
     return "".join(random.choice(letters_digits) for _ in range(length))
 
 
-def func_generator(self, method_name, dispatch_fn, collect_fn, execute_fn, blocking):
+def func_generator(self, method_name, dispatch_fn, collect_fn, execute_fn, blocking, tensor_transport=None):
     class Functor:
         def __call__(this, *args, **kwargs):
             args, kwargs = dispatch_fn(self, *args, **kwargs)
             padding_count = kwargs.pop(_padding_size_key, 0)
-            output = execute_fn(method_name, *args, **kwargs)
+            output = execute_fn(method_name, *args, tensor_transport=tensor_transport, **kwargs)
             if blocking:
                 output = ray.get(output)
             output = collect_fn(self, output)
@@ -684,13 +684,14 @@ class RayWorkerGroup(WorkerGroup):
             setattr(self, role_name, role_wg)
         self.method_names = self._bind_worker_method(self.ray_cls_with_init.cls, func_generator)
 
-    def _execute_remote_single_worker(self, worker, method_name: str, *args, **kwargs):
+    def _execute_remote_single_worker(self, worker, method_name: str, *args, tensor_transport=None, **kwargs):
         """Execute a method on a single worker remotely.
 
         Args:
             worker: The worker actor handle
             method_name: Name of the method to execute
             *args: Positional arguments for the method
+            tensor_transport: The tensor transport backend to use (e.g., "nixl" for direct GPU transfer)
             **kwargs: Keyword arguments for the method
 
         Returns:
@@ -698,9 +699,15 @@ class RayWorkerGroup(WorkerGroup):
         """
         if self.fused_worker_used and method_name not in self.method_names:
             remote_call = getattr(worker, self.fused_worker_execute_fn_name)
+            if tensor_transport:
+                return remote_call.options(tensor_transport=tensor_transport).remote(
+                    f"{self.sub_cls_name}_fwmn_{method_name}", *args, **kwargs
+                )
             return remote_call.remote(f"{self.sub_cls_name}_fwmn_{method_name}", *args, **kwargs)
         # fused worker not used
         remote_call = getattr(worker, method_name)
+        if tensor_transport:
+            return remote_call.options(tensor_transport=tensor_transport).remote(*args, **kwargs)
         return remote_call.remote(*args, **kwargs)
 
     def execute_rank_zero_sync(self, method_name: str, *args, **kwargs):
@@ -716,18 +723,19 @@ class RayWorkerGroup(WorkerGroup):
         """
         return ray.get(self.execute_rank_zero_async(method_name, *args, **kwargs))
 
-    def execute_rank_zero_async(self, method_name: str, *args, **kwargs):
+    def execute_rank_zero_async(self, method_name: str, *args, tensor_transport=None, **kwargs):
         """Execute a method on rank zero worker asynchronously.
 
         Args:
             method_name: Name of the method to execute
             *args: Positional arguments for the method
+            tensor_transport: The tensor transport backend to use (e.g., "nixl" for direct GPU transfer)
             **kwargs: Keyword arguments for the method
 
         Returns:
             Remote object reference to the method execution
         """
-        return self._execute_remote_single_worker(self._workers[0], method_name, *args, **kwargs)
+        return self._execute_remote_single_worker(self._workers[0], method_name, *args, tensor_transport=tensor_transport, **kwargs)
 
     def execute_rank_zero(self, method_name: str, *args, **kwargs):
         """Alias for execute_rank_zero_async.
@@ -768,12 +776,13 @@ class RayWorkerGroup(WorkerGroup):
         """
         return ray.get(self.execute_all_async(method_name, *args, **kwargs))
 
-    def execute_all_async(self, method_name: str, *args, **kwargs):
+    def execute_all_async(self, method_name: str, *args, tensor_transport=None, **kwargs):
         """Execute a method on all workers asynchronously.
 
         Args:
             method_name: Name of the method to execute
             *args: Positional arguments for the method
+            tensor_transport: The tensor transport backend to use (e.g., "nixl" for direct GPU transfer)
             **kwargs: Keyword arguments for the method
 
         Returns:
@@ -792,11 +801,11 @@ class RayWorkerGroup(WorkerGroup):
                     sliced_args = tuple(arg[i] for arg in args)
                     sliced_kwargs = {k: v[i] for k, v in kwargs.items()}
                     result.append(
-                        self._execute_remote_single_worker(self._workers[i], method_name, *sliced_args, **sliced_kwargs)
+                        self._execute_remote_single_worker(self._workers[i], method_name, *sliced_args, tensor_transport=tensor_transport, **sliced_kwargs)
                     )
                 return result
 
-        return [self._execute_remote_single_worker(worker, method_name, *args, **kwargs) for worker in self._workers]
+        return [self._execute_remote_single_worker(worker, method_name, *args, tensor_transport=tensor_transport, **kwargs) for worker in self._workers]
 
     @property
     def master_address(self):
